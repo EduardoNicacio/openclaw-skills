@@ -1,6 +1,17 @@
 import { useAuthActions } from "@convex-dev/auth/react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
-import { ArrowRight, Ghost, Menu, Monitor, Moon, Plug, Search, Sun, Wrench } from "lucide-react";
+import {
+  ArrowRight,
+  ChevronDown,
+  Ghost,
+  Menu,
+  Monitor,
+  Moon,
+  Plug,
+  Search,
+  Sun,
+  Wrench,
+} from "lucide-react";
 import { type ComponentType, useEffect, useMemo, useRef, useState } from "react";
 import { getUserFacingAuthError } from "../lib/authErrorMessage";
 import { gravatarUrl } from "../lib/gravatar";
@@ -84,8 +95,9 @@ export default function Header() {
   const location = useLocation();
 
   const avatar = me?.image ?? (me?.email ? gravatarUrl(me.email) : undefined);
-  const handle = me?.handle ?? me?.displayName ?? "user";
-  const initial = (me?.displayName ?? me?.name ?? handle).charAt(0).toUpperCase();
+  const rawHandle = me?.handle ?? me?.displayName ?? "user";
+  const handle = rawHandle.length > 25 ? `${rawHandle.slice(0, 25)}…` : rawHandle;
+  const initial = (me?.displayName ?? me?.name ?? rawHandle).charAt(0).toUpperCase();
   const isStaff = isModerator(me);
   const hasResolvedUser = Boolean(me);
   const navCtx = useMemo(
@@ -448,11 +460,11 @@ export default function Header() {
                     ) : (
                       <span className="user-menu-fallback">{initial}</span>
                     )}
-                    <span className="mono">@{handle}</span>
-                    <span className="user-menu-chevron">▾</span>
+                    <span className="mono truncate">@{handle}</span>
+                    <ChevronDown className="user-menu-chevron" size={16} />
                   </button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
+                <DropdownMenuContent align="end" className="user-dropdown-content">
                   <DropdownMenuItem asChild>
                     <Link to="/dashboard">Dashboard</Link>
                   </DropdownMenuItem>
