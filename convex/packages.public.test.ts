@@ -3268,6 +3268,14 @@ describe("packages public queries", () => {
       runtimeId: "ivangdavila-whatsapp",
       updatedAt: expect.any(Number),
     });
+    expect(patch).toHaveBeenCalledWith(
+      "packageSearchDigest:demo",
+      expect.objectContaining({
+        name: "ivangdavila-whatsapp",
+        normalizedName: "ivangdavila-whatsapp",
+        runtimeId: "ivangdavila-whatsapp",
+      }),
+    );
     expect(insert).toHaveBeenCalledWith(
       "auditLogs",
       expect.objectContaining({
