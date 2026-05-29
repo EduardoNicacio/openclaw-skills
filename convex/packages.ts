@@ -5205,9 +5205,11 @@ async function publishPackageImpl(
 
   const displayName = payload.displayName?.trim() || name;
   const files = normalizePublishFiles(payload.files as never);
-  const oversizedFile = findOversizedPublishFile(files);
-  if (oversizedFile) {
-    throw new ConvexError(getPublishFileSizeError(oversizedFile.path));
+  if (payload.artifact?.kind !== "npm-pack") {
+    const oversizedFile = findOversizedPublishFile(files);
+    if (oversizedFile) {
+      throw new ConvexError(getPublishFileSizeError(oversizedFile.path));
+    }
   }
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
   if (totalBytes > MAX_PUBLISH_TOTAL_BYTES) {

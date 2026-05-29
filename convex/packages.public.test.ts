@@ -43,6 +43,7 @@ import {
   searchForViewerInternal,
   searchPublic,
 } from "./packages";
+import { MAX_PUBLISH_FILE_BYTES } from "./lib/publishLimits";
 
 vi.mock("@convex-dev/auth/server", () => ({
   getAuthUserId: vi.fn(),
@@ -4853,6 +4854,175 @@ describe("packages public queries", () => {
         },
       }),
     ).rejects.toThrow("Skill packages must use the skills publish flow");
+  });
+
+  it("keeps raw package publishes behind the per-file size limit", async () => {
+    const ctx = {
+      runQuery: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          role: "user",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce(null),
+      runMutation: vi.fn(),
+    };
+
+    await expect(
+      publishPackageForUserInternalHandler(ctx as never, {
+        actorUserId: "users:owner",
+        payload: {
+          name: "demo-plugin",
+          family: "bundle-plugin",
+          version: "1.0.0",
+          changelog: "init",
+          bundle: { hostTargets: ["desktop"] },
+          files: [
+            {
+              path: "assets/viewer-runtime.js",
+              size: MAX_PUBLISH_FILE_BYTES + 1,
+              storageId: "storage:large",
+              sha256: "large",
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow('File "assets/viewer-runtime.js" exceeds 10MB limit');
+  });
+
+  it("allows large files inside ClawPack npm package artifacts", async () => {
+    const runMutation = vi.fn(async (_ref: unknown, args: Record<string, unknown>) => {
+      if (args.name === "demo-plugin" && args.version === "1.0.0") {
+        return { ok: true, packageId: "packages:demo", releaseId: "releases:demo-1" };
+      }
+      return null;
+    });
+    const ctx = {
+      runQuery: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce({
+          _id: "users:owner",
+          role: "user",
+          githubCreatedAt: Date.now() - 20 * 24 * 60 * 60 * 1000,
+        })
+        .mockResolvedValueOnce(null),
+      runMutation,
+      scheduler: {
+        runAfter: vi.fn(),
+      },
+      storage: {
+        get: vi.fn(async (storageId: string) => {
+          const files = new Map<string, string>([
+            [
+              "storage:package",
+              JSON.stringify({
+                name: "demo-plugin",
+                version: "1.0.0",
+                openclaw: {
+                  extensions: ["./dist/index.js"],
+                  compat: { pluginApi: "^1.0.0" },
+                  build: { openclawVersion: "2026.5.28" },
+                  configSchema: { type: "object", additionalProperties: false },
+                },
+              }),
+            ],
+            ["storage:manifest", JSON.stringify({ id: "demo-plugin" })],
+            ["storage:runtime", "export {};"],
+            ["storage:large", "/* bundled viewer runtime */"],
+          ]);
+          const content = files.get(storageId);
+          return content ? new Blob([content]) : null;
+        }),
+      },
+    };
+
+    await expect(
+      publishPackageForUserInternalHandler(ctx as never, {
+        actorUserId: "users:owner",
+        payload: {
+          name: "demo-plugin",
+          displayName: "Demo Plugin",
+          family: "code-plugin",
+          version: "1.0.0",
+          changelog: "init",
+          source: {
+            kind: "github",
+            url: "https://github.com/openclaw/demo-plugin",
+            repo: "openclaw/demo-plugin",
+            ref: "refs/tags/v1.0.0",
+            commit: "abc123",
+            path: ".",
+            importedAt: Date.now(),
+          },
+          files: [
+            {
+              path: "package.json",
+              size: 1,
+              storageId: "storage:package",
+              sha256: "package",
+              contentType: "application/json",
+            },
+            {
+              path: "openclaw.plugin.json",
+              size: 1,
+              storageId: "storage:manifest",
+              sha256: "manifest",
+              contentType: "application/json",
+            },
+            {
+              path: "dist/index.js",
+              size: 1,
+              storageId: "storage:runtime",
+              sha256: "runtime",
+              contentType: "application/javascript",
+            },
+            {
+              path: "assets/viewer-runtime.js",
+              size: MAX_PUBLISH_FILE_BYTES + 1,
+              storageId: "storage:large",
+              sha256: "large",
+              contentType: "application/javascript",
+            },
+          ],
+          artifact: {
+            kind: "npm-pack",
+            storageId: "storage:clawpack",
+            sha256: "clawpack",
+            size: MAX_PUBLISH_FILE_BYTES + 1,
+            format: "tgz",
+            npmIntegrity: "sha512-test",
+            npmShasum: "shasum",
+            npmTarballName: "demo-plugin-1.0.0.tgz",
+            npmUnpackedSize: MAX_PUBLISH_FILE_BYTES + 1,
+            npmFileCount: 4,
+          },
+        },
+      }),
+    ).resolves.toEqual({ ok: true, packageId: "packages:demo", releaseId: "releases:demo-1" });
+
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        artifactKind: "npm-pack",
+        files: expect.arrayContaining([
+          expect.objectContaining({
+            path: "assets/viewer-runtime.js",
+            size: MAX_PUBLISH_FILE_BYTES + 1,
+          }),
+        ]),
+      }),
+    );
   });
 
   it("rejects trusted publish tokens after trusted publisher rotation or deletion", async () => {
