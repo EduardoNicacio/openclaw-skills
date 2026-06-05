@@ -18,6 +18,7 @@ type PublicGitHubSkillSource = Pick<
   | "displayManifestStatus"
   | "displayManifestFetchedAt"
   | "displayManifestCommit"
+  | "lastSyncIssues"
   | "lastSyncInvalidSkills"
   | "createdAt"
   | "updatedAt"
@@ -70,6 +71,7 @@ async function toPublicGitHubSkillSource(
     displayManifestStatus: source.displayManifestStatus,
     displayManifestFetchedAt: source.displayManifestFetchedAt,
     displayManifestCommit: source.displayManifestCommit,
+    lastSyncIssues: source.lastSyncIssues,
     lastSyncInvalidSkills: source.lastSyncInvalidSkills,
     createdAt: source.createdAt,
     updatedAt: source.updatedAt,
