@@ -154,7 +154,7 @@ const listPublicHandler = (
       items: Array<{
         handle: string;
         kind: "user" | "org";
-        stats: { downloads: number };
+        stats: { installs: number };
         publishedItems?: Array<{ displayName: string }>;
       }>;
       total: number;
@@ -175,8 +175,8 @@ const listPublicPageHandler = (
       page: Array<{
         handle: string;
         kind: "user" | "org";
-        stats: { downloads: number };
-        publishedItems: Array<{ displayName: string; downloads: number }>;
+        stats: { installs: number };
+        publishedItems: Array<{ displayName: string; installs: number; downloads: number }>;
       }>;
       counts: { all: number; individuals: number; organizations: number };
       globalCounts: { all: number; individuals: number; organizations: number };
@@ -190,6 +190,8 @@ const listPublishedPageHandler = (
   listPublishedPage as unknown as WrappedHandler<
     {
       handle: string;
+      kind?: "skill" | "plugin";
+      sort?: "installs" | "recent" | "downloads";
       paginationOpts: { cursor: string | null; numItems: number };
     },
     {
@@ -233,7 +235,7 @@ const getPublishedDisplayManifestHandler = (
     {
       handle: string;
       kind?: "skill" | "plugin";
-      sort?: "downloads" | "recent";
+      sort?: "installs" | "recent" | "downloads";
     },
     {
       mode: "grouped";
@@ -958,7 +960,7 @@ describe("publishers membership controls", () => {
     },
   );
 
-  it("lists individual and org publishers ranked by aggregate downloads", async () => {
+  it("lists individual and org publishers ranked by aggregate installs", async () => {
     const publisherRows = [
       {
         _id: "publishers:alice",
@@ -1028,7 +1030,7 @@ describe("publishers membership controls", () => {
             if (table === "publishers" && indexName === "by_handle") {
               return { unique: vi.fn(async () => null) };
             }
-            if (table === "publishers" && indexName === "by_active_total_downloads") {
+            if (table === "publishers" && indexName === "by_active_total_installs") {
               return {
                 order: vi.fn(() => ({ collect: vi.fn(async () => publisherRows) })),
               };
@@ -1058,7 +1060,7 @@ describe("publishers membership controls", () => {
     expect(result.counts).toEqual({ all: 2, individuals: 1, organizations: 1 });
     expect(result.items.map((item) => item.handle)).toEqual(["openclaw", "alice"]);
     expect(result.items.map((item) => item.kind)).toEqual(["org", "user"]);
-    expect(result.items.map((item) => item.stats.downloads)).toEqual([20, 9]);
+    expect(result.items.map((item) => item.stats.installs)).toEqual([15, 5]);
   });
 
   it("filters public publisher listings by kind", async () => {
@@ -1112,7 +1114,7 @@ describe("publishers membership controls", () => {
             if (table === "publishers" && indexName === "by_handle") {
               return { unique: vi.fn(async () => null) };
             }
-            if (table === "publishers" && indexName === "by_active_total_downloads") {
+            if (table === "publishers" && indexName === "by_active_total_installs") {
               return {
                 order: vi.fn(() => ({ collect: vi.fn(async () => publisherRows) })),
               };
@@ -1211,7 +1213,7 @@ describe("publishers membership controls", () => {
             if (table === "publishers" && indexName === "by_handle") {
               return { unique: vi.fn(async () => null) };
             }
-            if (table === "publishers" && indexName === "by_active_total_downloads") {
+            if (table === "publishers" && indexName === "by_active_total_installs") {
               return {
                 order: vi.fn(() => ({ collect: vi.fn(async () => publisherRows) })),
               };
@@ -1313,7 +1315,7 @@ describe("publishers membership controls", () => {
             if (table === "publishers" && indexName === "by_handle") {
               return { unique: vi.fn(async () => null) };
             }
-            if (table === "publishers" && indexName === "by_active_kind_total_downloads") {
+            if (table === "publishers" && indexName === "by_active_kind_total_installs") {
               return {
                 order: vi.fn(() => ({
                   take: vi.fn(async () =>
@@ -1322,7 +1324,7 @@ describe("publishers membership controls", () => {
                 })),
               };
             }
-            if (table === "publishers" && indexName === "by_active_total_downloads") {
+            if (table === "publishers" && indexName === "by_active_total_installs") {
               return {
                 order: vi.fn(() => ({
                   take: vi.fn(async () => publisherRows),
@@ -1419,7 +1421,7 @@ describe("publishers membership controls", () => {
             if (table === "publishers" && indexName === "by_handle") {
               return { unique: vi.fn(async () => null) };
             }
-            if (table === "publishers" && indexName === "by_active_total_downloads") {
+            if (table === "publishers" && indexName === "by_active_total_installs") {
               return {
                 order: vi.fn(() => ({
                   take: vi.fn(async () => publisherRows),
@@ -1470,7 +1472,7 @@ describe("publishers membership controls", () => {
     expect(ownerPublisherQueries).toEqual(["publishers:alice", "publishers:alice"]);
   });
 
-  it("orders public publisher card previews by installs while rendering downloads", async () => {
+  it("orders and renders public publisher card previews by installs", async () => {
     const publisherRows = [
       {
         _id: "publishers:openclaw",
@@ -1569,7 +1571,7 @@ describe("publishers membership controls", () => {
             if (table === "publishers" && indexName === "by_handle") {
               return { unique: vi.fn(async () => null) };
             }
-            if (table === "publishers" && indexName === "by_active_total_downloads") {
+            if (table === "publishers" && indexName === "by_active_total_installs") {
               return {
                 order: vi.fn(() => ({
                   take: vi.fn(async () => publisherRows),
@@ -1608,8 +1610,8 @@ describe("publishers membership controls", () => {
       "Recent Tool",
       "Popular Skill",
     ]);
+    expect(result.page[0]?.publishedItems.map((item) => item.installs)).toEqual([50, 40, 35]);
     expect(result.page[0]?.publishedItems.map((item) => item.downloads)).toEqual([12, 10, 98]);
-    expect(result.page[0]?.publishedItems[0]).not.toHaveProperty("installs");
   });
 
   it("does not hydrate every publisher catalog preview before filtering public publisher pages", async () => {
@@ -1646,7 +1648,7 @@ describe("publishers membership controls", () => {
             if (table === "publishers" && indexName === "by_handle") {
               return { unique: vi.fn(async () => null) };
             }
-            if (table === "publishers" && indexName === "by_active_total_downloads") {
+            if (table === "publishers" && indexName === "by_active_total_installs") {
               return {
                 order: vi.fn(() => ({
                   take: vi.fn(async () => publisherRows),
@@ -1711,7 +1713,7 @@ describe("publishers membership controls", () => {
               },
             };
             buildQuery(q);
-            if (table === "publishers" && indexName === "by_active_total_downloads") {
+            if (table === "publishers" && indexName === "by_active_total_installs") {
               return {
                 order: vi.fn(() => ({
                   take: vi.fn(async () => publisherRows),
@@ -1743,7 +1745,7 @@ describe("publishers membership controls", () => {
     expect(ownerPublisherQueries).toEqual([]);
   });
 
-  it("builds scoped plugin profile links with route segments", async () => {
+  it("normalizes legacy downloads catalog sorts to install-backed profile items", async () => {
     const publisher = {
       _id: "publishers:openclaw",
       _creationTime: 1,
@@ -1800,11 +1802,17 @@ describe("publishers membership controls", () => {
 
     const result = await listPublishedPageHandler(ctx as never, {
       handle: "openclaw",
+      sort: "downloads",
       paginationOpts: { cursor: null, numItems: 12 },
     });
 
     expect(result.page).toMatchObject([
-      { displayName: "Example Plugin", href: "/plugins/@openclaw/example-plugin" },
+      {
+        displayName: "Example Plugin",
+        downloads: 7,
+        href: "/plugins/@openclaw/example-plugin",
+        installs: 3,
+      },
     ]);
   });
 

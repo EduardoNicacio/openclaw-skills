@@ -19,6 +19,7 @@ const { insertStatEvent } = await import("./skillStatEvents");
 const {
   ensureHandler,
   getByHandle,
+  getHoverStats,
   getBanAppealContextByGitHubProviderAccountIdInternal,
   list,
   searchInternal,
@@ -46,6 +47,9 @@ type WrappedHandler<TArgs, TResult> = {
 const meHandler = (me as unknown as WrappedHandler<Record<string, never>, unknown>)._handler;
 const getByHandleHandler = (getByHandle as unknown as WrappedHandler<{ handle: string }, unknown>)
   ._handler;
+const getHoverStatsHandler = (
+  getHoverStats as unknown as WrappedHandler<{ userId: string }, unknown>
+)._handler;
 const updateProfileHandler = (
   updateProfile as unknown as WrappedHandler<{ displayName: string; bio?: string }, void>
 )._handler;
@@ -1342,6 +1346,144 @@ describe("users.getByHandle", () => {
     expect(publisherUnique).toHaveBeenCalledOnce();
     expect(get).not.toHaveBeenCalled();
     expect(result).toBeNull();
+  });
+});
+
+describe("users.getHoverStats", () => {
+  it("uses install aggregates from a legacy personal publisher link", async () => {
+    const get = vi.fn(async (id: string) => {
+      if (id === "users:owner") {
+        return {
+          _id: "users:owner",
+          _creationTime: 1,
+          handle: "owner",
+          displayName: "Owner",
+          name: "Owner",
+          email: "owner@example.com",
+          role: "user",
+          createdAt: 1,
+          personalPublisherId: "publishers:owner",
+        };
+      }
+      if (id === "publishers:owner") {
+        return {
+          _id: "publishers:owner",
+          _creationTime: 1,
+          kind: "user",
+          handle: "owner",
+          displayName: "Owner",
+          publishedSkills: 4,
+          totalStars: 5,
+          totalDownloads: 91,
+          totalInstalls: 37,
+          createdAt: 1,
+          updatedAt: 1,
+        };
+      }
+      return null;
+    });
+
+    const result = await getHoverStatsHandler(
+      {
+        db: {
+          get,
+          query: vi.fn(() => {
+            throw new Error("publisher lookup should use personalPublisherId");
+          }),
+        },
+      },
+      { userId: "users:owner" },
+    );
+
+    expect(result).toEqual({
+      publishedSkills: 4,
+      totalStars: 5,
+      totalDownloads: 91,
+      totalInstalls: 37,
+    });
+  });
+
+  it("uses bounded legacy owner rows when a personal publisher aggregate is not backfilled", async () => {
+    const get = vi.fn(async (id: string) => {
+      if (id === "users:owner") {
+        return {
+          _id: "users:owner",
+          _creationTime: 1,
+          handle: "owner",
+          displayName: "Owner",
+          name: "Owner",
+          email: "owner@example.com",
+          role: "user",
+          createdAt: 1,
+          personalPublisherId: "publishers:owner",
+        };
+      }
+      if (id === "publishers:owner") {
+        return {
+          _id: "publishers:owner",
+          _creationTime: 1,
+          kind: "user",
+          handle: "owner",
+          displayName: "Owner",
+          publishedSkills: 1,
+          totalStars: 2,
+          totalDownloads: 30,
+          createdAt: 1,
+          updatedAt: 1,
+        };
+      }
+      return null;
+    });
+    const takeLimits: number[] = [];
+    const skill = {
+      _id: "skills:demo",
+      _creationTime: 1,
+      ownerUserId: "users:owner",
+      slug: "demo",
+      stats: {
+        downloads: 0,
+        stars: 2,
+        installsCurrent: 7,
+        installsAllTime: 12,
+        comments: 0,
+        versions: 1,
+      },
+      statsInstallsAllTime: 12,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const pkg = {
+      _id: "packages:demo",
+      _creationTime: 1,
+      ownerUserId: "users:owner",
+      stats: { downloads: 0, installs: 8, stars: 0, versions: 1 },
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const query = vi.fn((table: string) => ({
+      withIndex: (indexName: string) => ({
+        collect: async () => [],
+        order: () => ({
+          take: async (limit: number) => {
+            takeLimits.push(limit);
+            if (table === "skills" && indexName === "by_owner_active_updated") return [skill];
+            if (table === "packages" && indexName === "by_owner") return [pkg];
+            return [];
+          },
+        }),
+      }),
+    }));
+
+    const result = await getHoverStatsHandler({ db: { get, query } }, { userId: "users:owner" });
+
+    expect(result).toEqual({
+      publishedSkills: 1,
+      totalStars: 2,
+      totalDownloads: 30,
+      totalInstalls: 20,
+    });
+    expect(takeLimits).toHaveLength(4);
+    expect(takeLimits.every((limit) => limit > 0 && limit <= 200)).toBe(true);
   });
 });
 
