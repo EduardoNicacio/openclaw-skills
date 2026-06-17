@@ -90,7 +90,6 @@ function formatRetryDelay(retryAfterSeconds: number | null) {
 }
 
 function parsePluginSort(value: unknown): LegacyPluginSort | undefined {
-  if (value === "downloads") return "installs";
   if (
     value === "recommended" ||
     value === "relevance" ||
@@ -143,7 +142,11 @@ export async function loadPluginsPageData(
       cursor: args.q ? undefined : args.cursor,
       featured: args.featured,
       isOfficial: args.official,
-      ...(!args.q && (args.sort === "installs" || !args.sort || args.sort === "recommended")
+      ...(!args.q &&
+      (args.sort === "installs" ||
+        args.sort === "updated" ||
+        !args.sort ||
+        args.sort === "recommended")
         ? { sort: args.sort ?? "recommended" }
         : {}),
       limit: PLUGINS_PAGE_SIZE,

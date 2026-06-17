@@ -23,7 +23,7 @@ const listPackageCatalogPageHandler = (
     {
       channel?: "official" | "community" | "private";
       isOfficial?: boolean;
-      sort?: "updated" | "downloads" | "installs";
+      sort?: "updated" | "downloads" | "recommended" | "installs";
       paginationOpts: { cursor: string | null; numItems: number };
     },
     {
@@ -103,8 +103,15 @@ function makeDigest(
 
 function makeCtx(
   pages: Array<{ page: Array<Record<string, unknown>>; isDone: boolean; continueCursor: string }>,
-  indexNames: string[] = [],
+  optionsOrIndexNames:
+    | { indexNames?: string[]; missingRecommendedScores?: boolean }
+    | string[] = {},
 ) {
+  const indexNames = Array.isArray(optionsOrIndexNames)
+    ? optionsOrIndexNames
+    : optionsOrIndexNames.indexNames;
+  const missingRecommendedScores =
+    !Array.isArray(optionsOrIndexNames) && optionsOrIndexNames.missingRecommendedScores === true;
   const pageByCursor = new Map<
     string | null,
     { page: Array<Record<string, unknown>>; isDone: boolean; continueCursor: string }
@@ -145,12 +152,16 @@ function makeCtx(
 
         return {
           withIndex: (indexName: string) => {
-            indexNames.push(indexName);
+            indexNames?.push(indexName);
             return {
               order: () => ({
                 paginate: async ({ cursor: pageCursor }: { cursor: string | null }) =>
                   pageByCursor.get(pageCursor) ?? { page: [], isDone: true, continueCursor: "" },
               }),
+              first: async () =>
+                missingRecommendedScores && indexName.startsWith("by_active_recommended_")
+                  ? (allDigests[0] ?? {})
+                  : null,
               unique: async () => null,
             };
           },
@@ -212,6 +223,136 @@ describe("skills package catalog queries", () => {
         isOfficial: true,
       }),
     ]);
+  });
+
+  it("uses the all-time installs index for install-sorted package catalog rows", async () => {
+    const indexNames: string[] = [];
+    const result = await listPackageCatalogPageHandler(
+      makeCtx(
+        [
+          {
+            page: [
+              makeDigest("installed-skill", {
+                stats: {
+                  downloads: 1,
+                  installsCurrent: 2,
+                  installsAllTime: 20,
+                  stars: 0,
+                  versions: 1,
+                  comments: 0,
+                },
+                statsInstallsAllTime: 20,
+              }),
+            ],
+            isDone: true,
+            continueCursor: "",
+          },
+        ],
+        { indexNames },
+      ),
+      {
+        sort: "installs",
+        paginationOpts: { cursor: null, numItems: 10 },
+      },
+    );
+
+    expect(indexNames).toEqual(["by_active_stats_installs_all_time"]);
+    expect(result.page).toEqual([
+      expect.objectContaining({
+        name: "installed-skill",
+        stats: expect.objectContaining({ installs: 20 }),
+      }),
+    ]);
+  });
+
+  it("uses the recommended score index for recommended package catalog rows", async () => {
+    const indexNames: string[] = [];
+    const result = await listPackageCatalogPageHandler(
+      makeCtx(
+        [
+          {
+            page: [
+              makeDigest("recommended-skill", {
+                recommendedScore: 12,
+                recommendedScoreVersion: 1,
+              }),
+            ],
+            isDone: true,
+            continueCursor: "",
+          },
+        ],
+        { indexNames },
+      ),
+      {
+        sort: "recommended",
+        paginationOpts: { cursor: null, numItems: 10 },
+      },
+    );
+
+    expect(indexNames.at(-1)).toBe("by_active_recommended_score");
+    expect(result.page).toEqual([expect.objectContaining({ name: "recommended-skill" })]);
+  });
+
+  it("falls recommended package catalog rows back to updated when scores are missing", async () => {
+    const indexNames: string[] = [];
+    const result = await listPackageCatalogPageHandler(
+      makeCtx(
+        [
+          {
+            page: [makeDigest("updated-fallback-skill")],
+            isDone: false,
+            continueCursor: "updated-next",
+          },
+        ],
+        { indexNames, missingRecommendedScores: true },
+      ),
+      {
+        sort: "recommended",
+        paginationOpts: { cursor: null, numItems: 1 },
+      },
+    );
+
+    expect(indexNames).toEqual(["by_active_recommended_score", "by_active_updated"]);
+    expect(result.page).toEqual([expect.objectContaining({ name: "updated-fallback-skill" })]);
+    expect(result.continueCursor).toContain('"recommendedFallback":"updated"');
+  });
+
+  it("keeps recommended package catalog cursors on their original index", async () => {
+    const indexNames: string[] = [];
+    const recommendedCursor = `skillcat:${JSON.stringify({
+      cursor: null,
+      offset: 1,
+      pageSize: 2,
+      done: false,
+    })}`;
+    const result = await listPackageCatalogPageHandler(
+      makeCtx(
+        [
+          {
+            page: [
+              makeDigest("already-seen-skill", {
+                recommendedScore: 20,
+                recommendedScoreVersion: 1,
+              }),
+              makeDigest("next-recommended-skill", {
+                recommendedScore: 10,
+                recommendedScoreVersion: 1,
+              }),
+            ],
+            isDone: true,
+            continueCursor: "",
+          },
+        ],
+        { indexNames, missingRecommendedScores: true },
+      ),
+      {
+        sort: "recommended",
+        paginationOpts: { cursor: recommendedCursor, numItems: 1 },
+      },
+    );
+
+    expect(indexNames).toEqual(["by_active_recommended_score"]);
+    expect(result.page).toEqual([expect.objectContaining({ name: "next-recommended-skill" })]);
   });
 
   it("searches skills with package-style lexical scoring", async () => {

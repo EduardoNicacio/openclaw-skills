@@ -150,6 +150,7 @@ const internalRefs = internal as unknown as {
   };
   skills: {
     getSkillBySlugInternal: unknown;
+    hasMissingPackageCatalogRecommendationScoresInternal: unknown;
     searchPackageCatalogForHttpInternal: unknown;
     getVersionByIdInternal: unknown;
     getVersionBySkillAndVersionInternal: unknown;
@@ -304,7 +305,7 @@ async function getOptionalViewerUserIdForRequest(ctx: ActionCtx, request: Reques
 const PACKAGE_FAMILY_VALUES = ["skill", "code-plugin", "bundle-plugin"] as const;
 const PLUGIN_EXPORT_FAMILY_VALUES = ["code-plugin", "bundle-plugin"] as const;
 const PACKAGE_CHANNEL_VALUES = ["official", "community", "private"] as const;
-const PACKAGE_LIST_SORT_VALUES = ["updated", "downloads", "recommended", "installs"] as const;
+const PACKAGE_LIST_SORT_VALUES = ["updated", "recommended", "installs"] as const;
 const MAX_PLUGIN_EXPORT_FILE_COUNT = 10_000;
 const MAX_PLUGIN_EXPORT_PAGE_LIMIT = 250;
 const DEFAULT_PLUGIN_EXPORT_PAGE_LIMIT = 250;
@@ -790,6 +791,7 @@ type CatalogSourceCursorState = {
 type UnifiedCatalogCursorState = {
   packages: CatalogSourceCursorState;
   skills: CatalogSourceCursorState;
+  recommendedFallback?: "updated";
 };
 
 type PluginCatalogCursorState = {
@@ -816,7 +818,6 @@ const PLUGIN_CATALOG_CURSOR_PREFIX = "pkgplugins:";
 const LEGACY_PLUGIN_SEARCH_CURSOR_PREFIX = "pkgpluginsearch:";
 const SKILL_CATALOG_CURSOR_PREFIX = "skillcat:";
 const PACKAGE_PAGE_CURSOR_PREFIX = "pkgpage:";
-const LEGACY_DOWNLOADS_INSTALL_CURSOR_PREFIX = "pkginstalls:";
 const CATALOG_CURSOR_PREFIXES = [
   UNIFIED_CATALOG_CURSOR_PREFIX,
   PLUGIN_CATALOG_CURSOR_PREFIX,
@@ -862,6 +863,7 @@ function decodeUnifiedCatalogCursor(raw: string | null | undefined): UnifiedCata
     return {
       packages: normalize(parsed.packages),
       skills: normalize(parsed.skills),
+      recommendedFallback: parsed.recommendedFallback === "updated" ? "updated" : undefined,
     };
   } catch {
     return {
@@ -999,10 +1001,6 @@ function compareCatalogItemsForSort(
       },
     );
     if (score !== 0) return score;
-  }
-  if (sort === "downloads") {
-    const downloads = (b.stats?.downloads ?? 0) - (a.stats?.downloads ?? 0);
-    if (downloads !== 0) return downloads;
   }
   if (sort === "installs") {
     const installs = (b.stats?.installs ?? 0) - (a.stats?.installs ?? 0);
@@ -1408,7 +1406,11 @@ async function listPackages(
   ctx: ActionCtx,
   request: Request,
   family?: PackageListQueryArgs["family"],
-  options?: { includeSkills?: boolean; pluginFamilies?: Array<"code-plugin" | "bundle-plugin"> },
+  options?: {
+    defaultSort?: (typeof PACKAGE_LIST_SORT_VALUES)[number];
+    includeSkills?: boolean;
+    pluginFamilies?: Array<"code-plugin" | "bundle-plugin">;
+  },
 ) {
   const rate = await applyRateLimit(ctx, request, "read");
   if (!rate.ok) return rate.response;
@@ -1429,15 +1431,8 @@ async function listPackages(
   if (!highlightedOnlyParam.ok) return text(highlightedOnlyParam.message, 400, rate.headers);
   const sortParam = parseEnumQueryParam(url.searchParams, "sort", PACKAGE_LIST_SORT_VALUES);
   if (!sortParam.ok) return text(sortParam.message, 400, rate.headers);
-  const isLegacyDownloadsSort = sortParam.value === "downloads";
-  const sort = isLegacyDownloadsSort ? "installs" : sortParam.value;
-  const cursor = isLegacyDownloadsSort
-    ? rawCursor?.startsWith(LEGACY_DOWNLOADS_INSTALL_CURSOR_PREFIX)
-      ? rawCursor.slice(LEGACY_DOWNLOADS_INSTALL_CURSOR_PREFIX.length)
-      : null
-    : rawCursor;
-  const nextCursor = (value: string | null) =>
-    isLegacyDownloadsSort && value ? `${LEGACY_DOWNLOADS_INSTALL_CURSOR_PREFIX}${value}` : value;
+  const effectiveSort = sortParam.value ?? options?.defaultSort;
+  const cursor = rawCursor;
   const category = url.searchParams.get("category")?.trim() || undefined;
   if (category && !isPluginCategorySlug(category)) {
     return text("Invalid plugin category", 400, rate.headers);
@@ -1462,23 +1457,40 @@ async function listPackages(
       channel: channelParam.value,
       isOfficial: isOfficial.value,
       highlightedOnly: highlightedOnly || undefined,
-      sort,
+      sort: effectiveSort,
       paginationOpts: { cursor, numItems: limit },
     });
     return json(
-      { items: result.page, nextCursor: result.isDone ? null : nextCursor(result.continueCursor) },
+      { items: result.page, nextCursor: result.isDone ? null : result.continueCursor },
       200,
       rate.headers,
     );
   }
 
   if (!effectiveFamily && includeSkills) {
-    const packageSource = initCatalogSource<CatalogListItem>(
-      decodeUnifiedCatalogCursor(cursor).packages,
-    );
-    const skillSource = initCatalogSource<CatalogListItem>(
-      decodeUnifiedCatalogCursor(cursor).skills,
-    );
+    const decodedCursor = decodeUnifiedCatalogCursor(cursor);
+    const packageSource = initCatalogSource<CatalogListItem>(decodedCursor.packages);
+    const skillSource = initCatalogSource<CatalogListItem>(decodedCursor.skills);
+    const isFreshRecommendedRequest = effectiveSort === "recommended" && !cursor;
+    const hasMissingRecommendationScores = isFreshRecommendedRequest
+      ? await Promise.all([
+          runQueryRef<boolean>(
+            ctx,
+            internalRefs.packages.hasMissingRecommendationScoresInternal,
+            {},
+          ),
+          runQueryRef<boolean>(
+            ctx,
+            internalRefs.skills.hasMissingPackageCatalogRecommendationScoresInternal,
+            {},
+          ),
+        ]).then((results) => results.some(Boolean))
+      : false;
+    const useUpdatedRecommendationFallback =
+      effectiveSort === "recommended" &&
+      (decodedCursor.recommendedFallback === "updated" ||
+        (isFreshRecommendedRequest && hasMissingRecommendationScores));
+    const unifiedListSort = useUpdatedRecommendationFallback ? "updated" : effectiveSort;
     const pageSize = limit;
     const items: CatalogListItem[] = [];
 
@@ -1494,7 +1506,7 @@ async function listPackages(
             isOfficial: isOfficial.value,
             highlightedOnly: highlightedOnly || undefined,
             category,
-            sort,
+            sort: unifiedListSort,
             viewerUserId: viewerUserId ?? undefined,
             paginationOpts: { cursor: pageCursor, numItems },
           });
@@ -1513,7 +1525,7 @@ async function listPackages(
             channel: channelParam.value,
             isOfficial: isOfficial.value,
             highlightedOnly: highlightedOnly || undefined,
-            sort,
+            sort: unifiedListSort,
             paginationOpts: { cursor: pageCursor, numItems },
           });
           return {
@@ -1528,7 +1540,7 @@ async function listPackages(
       if (
         !skillCandidate ||
         (packageCandidate &&
-          compareCatalogItemsForSort(packageCandidate, skillCandidate, sort) <= 0)
+          compareCatalogItemsForSort(packageCandidate, skillCandidate, unifiedListSort) <= 0)
       ) {
         items.push(packageCandidate!);
         packageSource.index += 1;
@@ -1541,6 +1553,7 @@ async function listPackages(
     const nextState = {
       packages: finalizeCatalogSource(packageSource),
       skills: finalizeCatalogSource(skillSource),
+      recommendedFallback: useUpdatedRecommendationFallback ? ("updated" as const) : undefined,
     };
     const isDoneAll =
       nextState.packages.done &&
@@ -1550,7 +1563,7 @@ async function listPackages(
     return json(
       {
         items,
-        nextCursor: isDoneAll ? null : nextCursor(encodeUnifiedCatalogCursor(nextState)),
+        nextCursor: isDoneAll ? null : encodeUnifiedCatalogCursor(nextState),
       },
       200,
       rate.headers,
@@ -1570,7 +1583,7 @@ async function listPackages(
     const decodedCursor = decodePluginCatalogCursor(cursor);
     const codePluginSource = initCatalogSource<CatalogListItem>(decodedCursor.codePlugins);
     const bundlePluginSource = initCatalogSource<CatalogListItem>(decodedCursor.bundlePlugins);
-    const isFreshRecommendedRequest = sort === "recommended" && !cursor;
+    const isFreshRecommendedRequest = effectiveSort === "recommended" && !cursor;
     const hasMissingRecommendationScores = isFreshRecommendedRequest
       ? await runQueryRef<boolean>(
           ctx,
@@ -1581,10 +1594,10 @@ async function listPackages(
         )
       : false;
     const useUpdatedRecommendationFallback =
-      sort === "recommended" &&
+      effectiveSort === "recommended" &&
       (decodedCursor.recommendedFallback === "updated" ||
         (isFreshRecommendedRequest && hasMissingRecommendationScores));
-    const pluginListSort = useUpdatedRecommendationFallback ? "updated" : sort;
+    const pluginListSort = useUpdatedRecommendationFallback ? "updated" : effectiveSort;
     const pageSize = limit;
     const items: CatalogListItem[] = [];
     const fetchPluginPage = async (
@@ -1655,7 +1668,7 @@ async function listPackages(
     return json(
       {
         items,
-        nextCursor: isDoneAll ? null : nextCursor(encodePluginCatalogCursor(nextState)),
+        nextCursor: isDoneAll ? null : encodePluginCatalogCursor(nextState),
         ...(totalCount !== null ? { totalCount } : {}),
       },
       200,
@@ -1673,12 +1686,12 @@ async function listPackages(
     isOfficial: isOfficial.value,
     highlightedOnly: highlightedOnly || undefined,
     category,
-    sort,
+    sort: effectiveSort,
     viewerUserId: viewerUserId ?? undefined,
     paginationOpts: { cursor, numItems: limit },
   } satisfies PackageListQueryArgs);
   return json(
-    { items: result.page, nextCursor: result.isDone ? null : nextCursor(result.continueCursor) },
+    { items: result.page, nextCursor: result.isDone ? null : result.continueCursor },
     200,
     rate.headers,
   );
@@ -2072,6 +2085,7 @@ export async function exportPluginsV1Handler(ctx: ActionCtx, request: Request) {
 
 export async function listPluginsV1Handler(ctx: ActionCtx, request: Request) {
   return await listPackages(ctx, request, undefined, {
+    defaultSort: "recommended",
     includeSkills: false,
     pluginFamilies: ["code-plugin", "bundle-plugin"],
   });
