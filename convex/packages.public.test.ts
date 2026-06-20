@@ -12,6 +12,7 @@ import { buildDeterministicPackageZip } from "./lib/skillZip";
 import {
   backfillLatestPackageScanStatusInternal,
   backfillPackageReleaseScansInternal,
+  normalizeOfficialPublisherPackagesInternal,
   getPackageReleaseScanBackfillBatchInternal,
   getByName,
   list,
@@ -680,6 +681,26 @@ const backfillPackageReleaseScansInternalHandler = (
     { scheduled: number; nextCursor: number; done: boolean }
   >
 )._handler;
+const normalizeOfficialPublisherPackagesInternalHandler = (
+  normalizeOfficialPublisherPackagesInternal as unknown as WrappedHandler<
+    {
+      family?: "code-plugin" | "bundle-plugin";
+      cursor?: string | null;
+      batchSize?: number;
+      dryRun?: boolean;
+    },
+    {
+      family: "code-plugin" | "bundle-plugin";
+      cursor: string;
+      isDone: boolean;
+      scanned: number;
+      matched: number;
+      patched: number;
+      skippedPrivate: number;
+      dryRun: boolean;
+    }
+  >
+)._handler;
 const listOfficialPluginMigrationsInternalHandler = (
   listOfficialPluginMigrationsInternal as unknown as WrappedHandler<
     {
@@ -1277,6 +1298,7 @@ function makeDigestCtx(options: {
                     indexName === "by_active_family_downloads" ||
                     indexName === "by_active_installs" ||
                     indexName === "by_active_family_installs" ||
+                    indexName === "by_active_family_official_installs" ||
                     indexName === "by_active_recommended_rank" ||
                     indexName === "by_active_family_recommended_rank" ||
                     indexName === "by_active_recommended_score" ||
@@ -2556,6 +2578,211 @@ describe("packages public queries", () => {
     ]);
     expect(paginate).toHaveBeenCalledTimes(1);
     expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 50 });
+  });
+
+  it("uses a family-and-official installs index for official plugin pages", async () => {
+    const { ctx, indexFilters, indexNames, paginate } = makeDigestCtx({
+      packagePages: [
+        {
+          page: [
+            makePackageDoc({
+              _id: "packages:official-code-plugin",
+              name: "official-code-plugin",
+              normalizedName: "official-code-plugin",
+              displayName: "Official Code Plugin",
+              family: "code-plugin",
+              isOfficial: true,
+              channel: "official",
+              stats: { downloads: 100, installs: 200, stars: 0, versions: 1 },
+            }),
+          ],
+          isDone: true,
+          continueCursor: "",
+        },
+      ],
+    });
+
+    const result = await listPageForViewerInternalHandler(ctx, {
+      family: "code-plugin",
+      isOfficial: true,
+      sort: "installs",
+      paginationOpts: { cursor: null, numItems: 24 },
+    });
+
+    expect(result.page.map((entry) => entry.name)).toEqual(["official-code-plugin"]);
+    expect(result.isDone).toBe(true);
+    expect(indexNames).toEqual(["by_active_family_official_installs"]);
+    expect(indexFilters).toEqual([
+      {
+        indexName: "by_active_family_official_installs",
+        filters: [
+          { field: "softDeletedAt", value: undefined },
+          { field: "family", value: "code-plugin" },
+          { field: "isOfficial", value: true },
+        ],
+      },
+    ]);
+    expect(paginate).toHaveBeenCalledTimes(1);
+    expect(paginate).toHaveBeenCalledWith({ cursor: null, numItems: 120 });
+  });
+
+  it("normalizes public plugins from official publishers for official browse", async () => {
+    const officialPublisher = {
+      _id: "publishers:openclaw",
+      handle: "openclaw",
+      kind: "org",
+      deletedAt: undefined,
+      deactivatedAt: undefined,
+    };
+    const staleOfficialPlugin = makePackageDoc({
+      _id: "packages:memory",
+      name: "@openclaw/memory-lancedb",
+      normalizedName: "@openclaw/memory-lancedb",
+      displayName: "Memory LanceDB",
+      ownerPublisherId: officialPublisher._id,
+      channel: "community",
+      isOfficial: false,
+      capabilityTags: ["memory"],
+    });
+    const privateOfficialPlugin = makePackageDoc({
+      _id: "packages:private",
+      name: "@openclaw/private-plugin",
+      normalizedName: "@openclaw/private-plugin",
+      displayName: "Private Plugin",
+      ownerPublisherId: officialPublisher._id,
+      channel: "private",
+      isOfficial: false,
+    });
+    const communityPlugin = makePackageDoc({
+      _id: "packages:community",
+      name: "community-plugin",
+      normalizedName: "community-plugin",
+      displayName: "Community Plugin",
+      ownerPublisherId: "publishers:community",
+      channel: "community",
+      isOfficial: false,
+    });
+    const patch = vi.fn();
+    const insert = vi.fn();
+    const packageIndex = vi.fn();
+    const paginatePackages = vi.fn().mockResolvedValue({
+      page: [staleOfficialPlugin, privateOfficialPlugin, communityPlugin],
+      continueCursor: "",
+      isDone: true,
+    });
+    const ctx = {
+      db: {
+        get: vi.fn(async (id: string) => {
+          if (id === officialPublisher._id) return officialPublisher;
+          if (id === "publishers:community") {
+            return {
+              _id: id,
+              handle: "community",
+              kind: "org",
+              deletedAt: undefined,
+              deactivatedAt: undefined,
+            };
+          }
+          return null;
+        }),
+        query: vi.fn((table: string) => {
+          if (table === "packages") {
+            return {
+              withIndex: packageIndex.mockImplementation((_indexName, builder) => {
+                builder?.({
+                  eq: (_field: string, _value: string) => ({}),
+                });
+                return { paginate: paginatePackages };
+              }),
+            };
+          }
+          if (table === "officialPublishers") {
+            return {
+              withIndex: vi.fn((_indexName, builder) => {
+                let publisherId: string | undefined;
+                builder?.({
+                  eq: (_field: string, value: string) => {
+                    publisherId = value;
+                    return {};
+                  },
+                });
+                return {
+                  unique: vi
+                    .fn()
+                    .mockResolvedValue(
+                      publisherId === officialPublisher._id
+                        ? { _id: "officialPublishers:openclaw", publisherId }
+                        : null,
+                    ),
+                };
+              }),
+            };
+          }
+          if (table === "packageSearchDigest") {
+            return {
+              withIndex: vi.fn(() => ({
+                unique: vi.fn().mockResolvedValue({
+                  _id: "packageSearchDigest:memory",
+                  packageId: staleOfficialPlugin._id,
+                  channel: "community",
+                  isOfficial: false,
+                }),
+              })),
+            };
+          }
+          if (
+            table === "packageCapabilitySearchDigest" ||
+            table === "packagePluginCategorySearchDigest" ||
+            table === "packageTopicSearchDigest"
+          ) {
+            return {
+              withIndex: vi.fn(() => ({
+                collect: vi.fn().mockResolvedValue([]),
+              })),
+            };
+          }
+          throw new Error(`Unexpected table ${table}`);
+        }),
+        patch,
+        insert,
+        delete: vi.fn(),
+        normalizeId: vi.fn(),
+      },
+    };
+
+    const result = await normalizeOfficialPublisherPackagesInternalHandler(ctx as never, {
+      family: "code-plugin",
+      dryRun: false,
+      batchSize: 10,
+    });
+
+    expect(result).toMatchObject({
+      family: "code-plugin",
+      scanned: 3,
+      matched: 1,
+      patched: 1,
+      skippedPrivate: 1,
+      dryRun: false,
+    });
+    expect(packageIndex).toHaveBeenCalledWith("by_family_updated", expect.any(Function));
+    expect(paginatePackages).toHaveBeenCalledWith({ cursor: null, numItems: 10 });
+    expect(patch).toHaveBeenCalledWith("packages:memory", {
+      channel: "official",
+      isOfficial: true,
+    });
+    expect(patch).not.toHaveBeenCalledWith(
+      "packages:private",
+      expect.objectContaining({ channel: "official" }),
+    );
+    expect(patch).toHaveBeenCalledWith(
+      "packageSearchDigest:memory",
+      expect.objectContaining({
+        channel: "official",
+        isOfficial: true,
+        ownerHandle: "openclaw",
+        ownerKind: "org",
+      }),
+    );
   });
 
   it("includes current inferred taxonomy on install-sorted package pages", async () => {
