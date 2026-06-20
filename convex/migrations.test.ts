@@ -6,9 +6,18 @@ import type { Doc, Id, TableNames } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { computeRecommendationScore } from "./lib/recommendationScore";
 import { INSTALL_BACKFILL_CLEAN_WINDOW_READY_CURSOR_CREATION_TIME } from "./lib/skillInstallBackfill";
-import { backfillOneSkillInstallEstimate, runSkillInstallBackfill } from "./migrations";
+import {
+  backfillOneSkillInstallEstimate,
+  buildCanonicalCatalogMetadataPatch,
+  runCatalogMetadataCanonicalization,
+  runSkillInstallBackfill,
+} from "./migrations";
 
 type InstallBackfillWrappedHandler = {
+  _handler: (ctx: unknown, args: { dryRun?: boolean; confirm?: string }) => Promise<unknown>;
+};
+
+type CatalogMetadataCanonicalizationWrappedHandler = {
   _handler: (ctx: unknown, args: { dryRun?: boolean; confirm?: string }) => Promise<unknown>;
 };
 
@@ -109,6 +118,193 @@ function makeSkillSearchDigestDoc(): Doc<"skillSearchDigest"> {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+
+describe("catalog metadata canonicalization migration", () => {
+  it("promotes current inferred categories and topics into canonical fields", () => {
+    expect(
+      buildCanonicalCatalogMetadataPatch({
+        categoryKind: "skill",
+        categories: undefined,
+        topics: undefined,
+        inferredCategories: ["development", "research"],
+        inferredTopics: ["TypeScript", "Code Review"],
+        currentSourceId: "skillVersions:v1",
+        inferredSourceId: "skillVersions:v1",
+        inferredCategoryConfidence: "high",
+        inferredTopicConfidence: "high",
+        inferredClassifierVersion: "taxonomy-prototype-v9",
+        inferredTopicClassifierVersion: "topic-prototype-v1",
+        inferredInputHash: "category-hash",
+        inferredTopicInputHash: "topic-hash",
+        inferredAt: 123,
+      }),
+    ).toEqual({
+      categories: ["development", "research"],
+      topics: ["TypeScript", "Code Review"],
+      inferredCategories: undefined,
+      inferredTopics: undefined,
+      inferredCategoryConfidence: undefined,
+      inferredTopicConfidence: undefined,
+      inferredClassifierVersion: undefined,
+      inferredTopicClassifierVersion: undefined,
+      inferredInputHash: undefined,
+      inferredTopicInputHash: undefined,
+      inferredAt: undefined,
+    });
+  });
+
+  it("preserves explicit publisher metadata while clearing inferred metadata", () => {
+    expect(
+      buildCanonicalCatalogMetadataPatch({
+        categoryKind: "plugin",
+        categories: ["tools"],
+        topics: [],
+        inferredCategories: ["models"],
+        inferredTopics: ["TypeScript"],
+        currentSourceId: "skillVersions:v1",
+        inferredSourceId: "skillVersions:v1",
+        inferredCategoryConfidence: "medium",
+        inferredTopicConfidence: "high",
+      }),
+    ).toEqual({
+      inferredCategories: undefined,
+      inferredTopics: undefined,
+      inferredCategoryConfidence: undefined,
+      inferredTopicConfidence: undefined,
+      inferredClassifierVersion: undefined,
+      inferredTopicClassifierVersion: undefined,
+      inferredInputHash: undefined,
+      inferredTopicInputHash: undefined,
+      inferredAt: undefined,
+    });
+  });
+
+  it("does not promote stale inferred metadata", () => {
+    expect(
+      buildCanonicalCatalogMetadataPatch({
+        categoryKind: "skill",
+        categories: undefined,
+        topics: undefined,
+        inferredCategories: ["development"],
+        inferredTopics: ["TypeScript"],
+        currentSourceId: "skillVersions:v2",
+        inferredSourceId: "skillVersions:v1",
+        inferredClassifierVersion: "taxonomy-prototype-v9",
+        inferredTopicClassifierVersion: "topic-prototype-v1",
+      }),
+    ).toEqual({
+      inferredCategories: undefined,
+      inferredTopics: undefined,
+      inferredCategoryConfidence: undefined,
+      inferredTopicConfidence: undefined,
+      inferredClassifierVersion: undefined,
+      inferredTopicClassifierVersion: undefined,
+      inferredInputHash: undefined,
+      inferredTopicInputHash: undefined,
+      inferredAt: undefined,
+    });
+  });
+
+  it("does not promote inferred categories for legacy skill-family package rows", () => {
+    expect(
+      buildCanonicalCatalogMetadataPatch({
+        categoryKind: "none",
+        categories: undefined,
+        topics: undefined,
+        inferredCategories: ["models"],
+        inferredTopics: ["TypeScript"],
+        currentSourceId: "packageReleases:v1",
+        inferredSourceId: "packageReleases:v1",
+        inferredCategoryConfidence: "high",
+        inferredTopicConfidence: "high",
+      }),
+    ).toEqual({
+      topics: ["TypeScript"],
+      inferredCategories: undefined,
+      inferredTopics: undefined,
+      inferredCategoryConfidence: undefined,
+      inferredTopicConfidence: undefined,
+      inferredClassifierVersion: undefined,
+      inferredTopicClassifierVersion: undefined,
+      inferredInputHash: undefined,
+      inferredTopicInputHash: undefined,
+      inferredAt: undefined,
+    });
+  });
+
+  it("does not promote inferred metadata after a publisher metadata save", () => {
+    expect(
+      buildCanonicalCatalogMetadataPatch({
+        categoryKind: "skill",
+        categories: undefined,
+        topics: undefined,
+        inferredCategories: ["development"],
+        inferredTopics: ["TypeScript"],
+        currentSourceId: "skillVersions:v1",
+        inferredSourceId: "skillVersions:v1",
+        inferredCategoryConfidence: "high",
+        inferredTopicConfidence: "high",
+        hasPublisherCatalogIntent: true,
+      }),
+    ).toEqual({
+      inferredCategories: undefined,
+      inferredTopics: undefined,
+      inferredCategoryConfidence: undefined,
+      inferredTopicConfidence: undefined,
+      inferredClassifierVersion: undefined,
+      inferredTopicClassifierVersion: undefined,
+      inferredInputHash: undefined,
+      inferredTopicInputHash: undefined,
+      inferredAt: undefined,
+    });
+  });
+
+  it("is a no-op when no inferred catalog state exists", () => {
+    expect(
+      buildCanonicalCatalogMetadataPatch({
+        categoryKind: "skill",
+        categories: ["development"],
+        topics: ["Publisher Topic"],
+        currentSourceId: "skillVersions:v1",
+      }),
+    ).toBeNull();
+  });
+
+  it("dry-runs both tracked canonicalization migrations", async () => {
+    const runMutation = vi.fn().mockResolvedValue({});
+    const handler = (
+      runCatalogMetadataCanonicalization as unknown as CatalogMetadataCanonicalizationWrappedHandler
+    )._handler;
+
+    const result = await handler({ runMutation }, {});
+
+    expect(runMutation).toHaveBeenNthCalledWith(1, internal.migrations.run, {
+      fn: "migrations:canonicalizeSkillCatalogMetadata",
+      dryRun: true,
+      reset: true,
+    });
+    expect(runMutation).toHaveBeenNthCalledWith(2, internal.migrations.run, {
+      fn: "migrations:canonicalizePackageCatalogMetadata",
+      dryRun: true,
+      reset: true,
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      dryRun: true,
+      confirmRequired: "canonicalize-catalog-metadata",
+    });
+  });
+
+  it("requires explicit confirmation before canonicalizing catalog metadata", async () => {
+    const handler = (
+      runCatalogMetadataCanonicalization as unknown as CatalogMetadataCanonicalizationWrappedHandler
+    )._handler;
+
+    await expect(handler({ runMutation: vi.fn() }, { dryRun: false })).rejects.toThrow(
+      'Pass confirm="canonicalize-catalog-metadata" to apply.',
+    );
+  });
+});
 
 describe("skill install backfill migration", () => {
   it("dry-runs the install backfill migration through the tracked runner", async () => {
