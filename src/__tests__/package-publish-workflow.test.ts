@@ -51,6 +51,8 @@ describe("package publish workflow", () => {
     expect(workflow).toContain("source_sha:");
     expect(workflow).not.toMatch(/^\s*schedule:/m);
     expect(workflow).not.toMatch(/^\s*-\s*cron:/m);
+    expect(workflow).toContain("ref: main");
+    expect(workflow).toContain("if: ${{ github.ref == 'refs/heads/main' }}");
     expect(workflow).toContain("bun install --frozen-lockfile");
     expect(workflow).toContain("CLAWHUB_PLUGIN_INSPECTOR_WORKER_TOKEN");
     expect(script).toContain("package-inspector/claim");
