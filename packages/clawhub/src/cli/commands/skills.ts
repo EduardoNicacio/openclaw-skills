@@ -589,12 +589,18 @@ export async function cmdUpdate(
             version: 1,
             registry: existingOrigin?.registry ?? registry,
             slug: entry,
+            ...(resolvedOwnerHandle ? { ownerHandle: resolvedOwnerHandle } : {}),
             installedVersion: targetVersion,
             installedAt,
             fingerprint: installedFingerprint,
           });
 
-          lock.skills[entry] = withPinnedMetadata(targetVersion, installedAt, lock.skills[entry]);
+          lock.skills[entry] = withOwnerMetadata(
+            targetVersion,
+            installedAt,
+            resolvedOwnerHandle,
+            lock.skills[entry],
+          );
           markLockDirty();
           await flushLockfile();
           spinner.succeed(`${entry}: updated -> ${formatGitHubVersion(targetVersion)}`);

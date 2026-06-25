@@ -664,6 +664,96 @@ describe("cmdUpdate", () => {
     });
   });
 
+  it("preserves the owner handle across sequential GitHub-backed updates", async () => {
+    const firstCommit = "a".repeat(40);
+    const secondCommit = "b".repeat(40);
+    const lock = {
+      version: 1,
+      skills: { demo: { version: "0".repeat(40), installedAt: 123, ownerHandle: "openclaw" } },
+    };
+    let origin: Awaited<ReturnType<typeof readSkillOrigin>> = {
+      version: 1,
+      registry: "https://clawhub.ai",
+      slug: "demo",
+      ownerHandle: "openclaw",
+      installedVersion: "0".repeat(40),
+      installedAt: 123,
+    };
+
+    mockApiRequest
+      .mockResolvedValueOnce({
+        latestVersion: null,
+        owner: { handle: "openclaw" },
+        moderation: null,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        slug: "demo",
+        installKind: "github",
+        github: {
+          repo: "owner/repo",
+          path: "skills/demo",
+          commit: firstCommit,
+          contentHash: "first",
+          sourceUrl: `https://github.com/owner/repo/tree/${firstCommit}/skills/demo`,
+        },
+      })
+      .mockResolvedValueOnce({
+        latestVersion: null,
+        owner: { handle: "openclaw" },
+        moderation: null,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        slug: "demo",
+        installKind: "github",
+        github: {
+          repo: "owner/repo",
+          path: "skills/demo",
+          commit: secondCommit,
+          contentHash: "second",
+          sourceUrl: `https://github.com/owner/repo/tree/${secondCommit}/skills/demo`,
+        },
+      });
+    mockFetchBinary.mockResolvedValue(new Uint8Array([1, 2, 3]));
+    vi.mocked(readLockfile).mockImplementation(async () => lock);
+    vi.mocked(readSkillOrigin).mockImplementation(async () => origin);
+    vi.mocked(writeSkillOrigin).mockImplementation(async (_target, nextOrigin) => {
+      origin = nextOrigin;
+    });
+    vi.mocked(extractGitHubZipPathToDir).mockResolvedValue();
+    vi.mocked(listTextFiles).mockResolvedValue([]);
+    vi.mocked(stat).mockResolvedValue({} as unknown as Awaited<ReturnType<typeof stat>>);
+
+    await cmdUpdate(makeOpts(), "demo", {}, false);
+    await cmdUpdate(makeOpts(), "demo", {}, false);
+
+    const metadataRequests = mockApiRequest.mock.calls.filter(([, args]) => {
+      const request = args as { url?: string };
+      return request.url?.includes("/api/v1/skills/demo?");
+    });
+    expect(metadataRequests).toHaveLength(2);
+    for (const [, args] of metadataRequests) {
+      expect(new URL((args as { url: string }).url).searchParams.get("ownerHandle")).toBe(
+        "openclaw",
+      );
+    }
+    expect(writeSkillOrigin).toHaveBeenLastCalledWith(
+      "/work/skills/demo",
+      expect.objectContaining({ ownerHandle: "openclaw" }),
+    );
+    expect(writeLockfile).toHaveBeenLastCalledWith("/work", {
+      version: 1,
+      skills: {
+        demo: {
+          version: secondCommit,
+          installedAt: 123,
+          ownerHandle: "openclaw",
+        },
+      },
+    });
+  });
+
   it("does not overwrite GitHub-backed local files when the origin fingerprint is missing", async () => {
     const commit = "b".repeat(40);
     mockApiRequest
