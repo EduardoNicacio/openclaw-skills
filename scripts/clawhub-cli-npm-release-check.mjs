@@ -154,16 +154,20 @@ function collectReleaseTagErrors({ packageVersion, releaseTag, releaseSha, relea
       `Release tag ${normalizedTag} does not match packages/clawhub/package.json version ${normalizedVersion}; expected v${normalizedVersion}.`,
     );
   }
-  if (releaseSha?.trim() && releaseMainRef?.trim()) {
+  const normalizedReleaseSha = releaseSha?.trim() ?? "";
+  const normalizedReleaseMainRef = releaseMainRef?.trim() ?? "";
+  if (Boolean(normalizedReleaseSha) !== Boolean(normalizedReleaseMainRef)) {
+    errors.push("Release ancestry validation requires both --release-sha and --release-main-ref.");
+  } else if (normalizedReleaseSha && normalizedReleaseMainRef) {
     try {
       execFileSync(
         "git",
-        ["merge-base", "--is-ancestor", releaseSha.trim(), releaseMainRef.trim()],
+        ["merge-base", "--is-ancestor", normalizedReleaseSha, normalizedReleaseMainRef],
         { stdio: "ignore" },
       );
     } catch {
       errors.push(
-        `Tagged commit ${releaseSha.trim()} is not contained in ${releaseMainRef.trim()}.`,
+        `Tagged commit ${normalizedReleaseSha} is not contained in ${normalizedReleaseMainRef}.`,
       );
     }
   }
