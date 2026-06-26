@@ -65,9 +65,9 @@ jobs:
         run: |
           set -euo pipefail
           if ! command -v codex >/dev/null 2>&1; then
-            npm install -g @openai/codex@latest
+            npm install -g @openai/codex@0.115.0
           fi
-          python3 -m pip install --user jinja2
+          python3 -m pip install --user 'jinja2==3.1.6'
           codex --version
 
       - name: Authenticate Codex CLI
