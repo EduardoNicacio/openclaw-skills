@@ -63,6 +63,28 @@ describe("deviceAuth", () => {
         requestDeviceCode({ apiUrl: "https://api.example", siteUrl: "https://clawhub.ai" }),
       ).rejects.toThrow("Invalid device code response");
     });
+
+    it.each([
+      { expires_in: "bad", interval: 5 },
+      { expires_in: 900, interval: "bad" },
+      { expires_in: Number.NaN, interval: 5 },
+      { expires_in: 900, interval: -1 },
+    ])("should reject invalid response timing values: %#", async (timing) => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            device_code: "abc123",
+            user_code: "ABCD-1234",
+            verification_uri: "https://clawhub.ai/device",
+            ...timing,
+          }),
+      });
+
+      await expect(
+        requestDeviceCode({ apiUrl: "https://api.example", siteUrl: "https://clawhub.ai" }),
+      ).rejects.toThrow("Invalid device code response");
+    });
   });
 
   describe("pollForDeviceToken", () => {
@@ -85,6 +107,26 @@ describe("deviceAuth", () => {
       );
 
       expect(result.access_token).toBe("token123");
+    });
+
+    it.each([
+      { access_token: "token123", token_type: "bearer" },
+      { access_token: "token123", scope: "read write" },
+      null,
+      "invalid",
+    ])("should reject malformed successful token responses: %#", async (tokenResponse) => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(tokenResponse),
+      });
+
+      await expect(
+        pollForDeviceToken(
+          { apiUrl: "https://api.example", siteUrl: "https://clawhub.ai" },
+          "device_code_123",
+          { interval: 0.01, expiresIn: 10 },
+        ),
+      ).rejects.toThrow("Invalid device token response");
     });
 
     it("should keep polling on authorization_pending", async () => {

@@ -76,9 +76,9 @@ export async function requestDeviceCode(config: DeviceFlowConfig): Promise<Devic
     );
   }
 
-  const data = (await response.json()) as DeviceCodeResponse;
+  const data: unknown = await response.json().catch(() => null);
 
-  if (!data.device_code || !data.user_code || !data.verification_uri) {
+  if (!isDeviceCodeResponse(data)) {
     throw new Error("Invalid device code response from server");
   }
 
@@ -146,12 +146,17 @@ export async function pollForDeviceToken(
     }
 
     // Parse JSON once to avoid "body already read" errors
-    const data = (await response.json().catch(() => ({}))) as
-      | DeviceTokenResponse
-      | DeviceTokenErrorResponse;
+    const data: unknown = await response.json().catch(() => null);
 
-    if (response.ok && "access_token" in data && data.access_token) {
-      return data as DeviceTokenResponse;
+    if (response.ok) {
+      if (!isDeviceTokenResponse(data)) {
+        throw new Error("Invalid device token response from server");
+      }
+      return data;
+    }
+
+    if (!isRecord(data)) {
+      throw new Error("Invalid device token response from server");
     }
 
     const errorData = data as DeviceTokenErrorResponse;
@@ -180,4 +185,36 @@ export async function pollForDeviceToken(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isPositiveFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function isDeviceCodeResponse(value: unknown): value is DeviceCodeResponse {
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value.device_code) &&
+    isNonEmptyString(value.user_code) &&
+    isNonEmptyString(value.verification_uri) &&
+    isPositiveFiniteNumber(value.expires_in) &&
+    isPositiveFiniteNumber(value.interval)
+  );
+}
+
+function isDeviceTokenResponse(value: unknown): value is DeviceTokenResponse {
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value.access_token) &&
+    isNonEmptyString(value.token_type) &&
+    isNonEmptyString(value.scope)
+  );
 }
