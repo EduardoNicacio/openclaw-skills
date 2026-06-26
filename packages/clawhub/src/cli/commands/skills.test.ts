@@ -723,7 +723,7 @@ describe("cmdUpdate", () => {
     const lock = {
       version: 1,
       skills: { demo: { version: "0".repeat(40), installedAt: 123, ownerHandle: "openclaw" } },
-    };
+    } as const;
     let origin: Awaited<ReturnType<typeof readSkillOrigin>> = {
       version: 1,
       registry: "https://clawhub.ai",
